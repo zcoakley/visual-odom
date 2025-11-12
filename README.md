@@ -2,7 +2,7 @@
 
 This repo is a demo on using OpenCV to perform monocular visual odometry from a series of video images from a moving vehicle. It takes a series of images from a camera and outputs a video of the camera with visual tracking features overlayed, as well as a bird's eye view map of the path taken by the vehicle.
 
-<video src="demo.mp4" width="320" height="240" controls></video>
+[![Watch the video](https://img.youtube.com/vi/AtohW7_cD7s/hqdefault.jpg)](https://www.youtube.com/embed/AtohW7_cD7s)
 
 # Requirements
 
