@@ -1,16 +1,27 @@
+"""
+Script to perform monocular visual odometry on a sequence of the KITTI odometry dataset. You 
+can run this file directly. It will display a video with tracked features overlayed as well 
+as a bird's eye view of the path the vehicle is taking.
+
+Docstrings in this file were generated with AI and then edited.
+"""
+
 import os
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 
 # Set ground truth filepath
-ground_truth_file = "ground_truth.txt"
+GROUND_TRUTH_FILE = "ground_truth.txt"
 FRAME_0_ID = "000000"
 FRAME_1_ID = "000001"
 
-NUM_IMAGES = 2760
-MIN_FEATURES = 2000
-MAX_FRAME = 1000 # only use the first n frames
+# Parameters
+NUM_IMAGES = 2760 # This is the number of images in your dataset. This current value is the number of 
+                  # images in KITTI sequence 05.
+MIN_FEATURES = 2000 # The minimum number of features used. When the number of tracked features goes below this, 
+                    # it will trigger feature re-detection.
+MAX_FRAME = 1000 # only use the first n frames. For a large dataset, you may only want use a subset of the images.
 
 # Load image as grayscale
 img0 = cv2.imread(f'data/image_0/{FRAME_0_ID}.png', cv2.IMREAD_GRAYSCALE)
@@ -32,6 +43,23 @@ PP = (607.1928, 185.2157) # value from the KITTI dataset indicating where the ce
 
 
 def detect_features(img):
+    """
+    Detect keypoint features in an image using FAST feature detector.
+    
+    Uses OpenCV's FAST detector to identify corner features in the input image. 
+    Saves a visualization of detected features to 'features.png'.
+    
+    Args:
+        img (numpy.ndarray): Input grayscale image in which to detect features.
+    
+    Returns:
+        numpy.ndarray: Array of detected keypoints with shape (N, 1, 2) where N is the 
+            number of keypoints detected. Each keypoint is represented as (x, y) pixel 
+            coordinates.
+    
+    Note:
+        The FAST detector is configured with a threshold of 20.
+    """
     # FAST feature detector
 
     # find and draw the keypoints
@@ -54,6 +82,25 @@ def detect_features(img):
 
 
 def track_features(old_image, new_image, old_keypoints):
+    """
+    Track features between two consecutive images using Lucas-Kanade optical flow.
+    
+    Uses the KLT (Kanade-Lucas-Tomasi) tracker to find corresponding keypoints
+    between the old and new images. Only successfully tracked points are returned.
+    
+    Args:
+        old_image (numpy.ndarray): Previous grayscale image frame.
+        new_image (numpy.ndarray): Current grayscale image frame.
+        old_keypoints (numpy.ndarray): Array of keypoints from the old image with 
+            shape (N, 1, 2).
+    
+    Returns:
+        old_keypoints_filtered (numpy.ndarray): Filtered keypoints from the old 
+            image that were successfully tracked, with shape (M, 1, 2) where M <= N.
+        new_keypoints_filtered (numpy.ndarray): Corresponding keypoints in the new 
+            image, with shape (M, 1, 2).
+    """
+    
     # Feature tracking using KLT aka LK Optical Flow
 
     # Parameters for lucas kanade optical flow
@@ -62,9 +109,6 @@ def track_features(old_image, new_image, old_keypoints):
         maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
 )
-
-    # Convert a copy of the KeyPoint objects to the format needed for optical flow
-    # old_keypoints_copy = np.array([kp.pt for kp in old_keypoints], dtype=np.float32).reshape(-1, 1, 2)
 
     # calculate optical flow
     new_keypoints, status, err = cv2.calcOpticalFlowPyrLK(old_image, new_image, old_keypoints, None, **lk_params)
@@ -103,6 +147,26 @@ def track_features(old_image, new_image, old_keypoints):
 
 
 def calculate_essential_matrix(points1, points2):
+    """
+    Calculate the essential matrix between two sets of corresponding points.
+    
+    Uses RANSAC-based estimation to compute the essential matrix that relates
+    camera motion between two views. Also filters out outlier correspondences.
+    
+    Args:
+        points1 (numpy.ndarray): Feature points from the first image, 
+            shape (N, 1, 2) or (N, 2).
+        points2 (numpy.ndarray): Corresponding feature points from the second image, 
+            shape (N, 1, 2) or (N, 2).
+    
+    Returns:
+        E (numpy.ndarray): Essential matrix of shape (3, 3) representing the 
+            geometric relationship between the two camera views.
+        inliers1 (numpy.ndarray): Inlier points from the first image after 
+            RANSAC filtering, shape (M, 1, 2).
+        inliers2 (numpy.ndarray): Corresponding inlier points from the second 
+            image, shape (M, 1, 2).
+    """
     # Make sure keypoints have the correct shape
     points1 = np.array(points1, dtype=np.float32).reshape(-1, 2)
     points2 = np.array(points2, dtype=np.float32).reshape(-1, 2)
@@ -124,16 +188,46 @@ def calculate_essential_matrix(points1, points2):
 
 
 def recover_pose(E, points1, points2):
+    """
+    Recover camera rotation and translation from essential matrix.
+    
+    Decomposes the essential matrix to extract the relative rotation (R) and 
+    translation (t) between two camera poses. Automatically selects the physically
+    valid solution with points in front of both cameras.
+    
+    Args:
+        E (numpy.ndarray): Essential matrix of shape (3, 3) from 
+            calculate_essential_matrix.
+        points1 (numpy.ndarray): Feature points from the first image, 
+            shape (N, 1, 2) or (N, 2).
+        points2 (numpy.ndarray): Corresponding feature points from the second image, 
+            shape (N, 1, 2) or (N, 2).
+    
+    Returns:
+        R (numpy.ndarray): Rotation matrix of shape (3, 3) representing the 
+            camera rotation between views.
+        t (numpy.ndarray): Translation vector of shape (3, 1) representing the 
+            camera translation direction (unit length).
+    """
     retval, R, t, mask = cv2.recoverPose(E, points1, points2, focal=FOCAL, pp=PP)
     return R, t
 
 
 def get_absolute_scale(frame_id, ground_truth_filepath):
     """
-    Read ground truth poses to get absolute scale.
+    Calculate absolute scale from ground truth poses.
     
-    Normally this would be done using some external sensor data. frame_id should be the 
-    name of the second frame.
+    Reads ground truth camera poses to determine the actual distance traveled
+    between consecutive frames. In real life this would be done with external sensor data.
+    
+    Args:
+        frame_id (int): Index of the current frame (should be >= 1).
+        ground_truth_filepath (str): Path to the ground truth pose file containing 
+            transformation matrices.
+    
+    Returns:
+        float: Euclidean distance traveled between frame_id-1 and frame_id in meters.
+            Returns 0 if frame_id is invalid or if an error occurs.
     """
     try:
         with open(ground_truth_filepath, 'r') as f:
@@ -157,7 +251,16 @@ def get_absolute_scale(frame_id, ground_truth_filepath):
         return 0
     
 def load_ground_truth_poses(file):
-    """Load ground truth poses (T_w_cam0) from file."""
+    """
+    Load all ground truth camera poses from file.
+    
+    Args:
+        file (str): Path to the ground truth pose file.
+    
+    Returns:
+        numpy.ndarray: Array of 4x4 transformation matrices with shape (N, 4, 4), 
+            where N is the number of frames.
+    """
     pose_file = file
 
     # Read and parse the poses
@@ -191,7 +294,7 @@ R_f = R.copy()
 t_f = t.copy()
 
 # Ground truth poses
-ground_truth_poses = load_ground_truth_poses(ground_truth_file)
+ground_truth_poses = load_ground_truth_poses(GROUND_TRUTH_FILE)
 
 # Create trajectory visualization window
 traj = np.zeros((600, 600, 3), dtype=np.uint8)
@@ -222,9 +325,6 @@ for image_num in range(2, min(MAX_FRAME, NUM_IMAGES)):
     prev_features, curr_features = track_features(
         prev_image, curr_image, prev_features
     )
-
-    # Mystery feature conversion
-    # prev_features = np.array([kp.pt for kp in keypoints_0], dtype=np.float32).reshape(-1, 1, 2)
     
     # Need at least 5 features for 5-point algorithm
     if len(prev_features) < 5:
@@ -236,7 +336,7 @@ for image_num in range(2, min(MAX_FRAME, NUM_IMAGES)):
     R, t = recover_pose(essential_matrix, prev_features, curr_features)
     
     # Get absolute scale from ground truth
-    scale = get_absolute_scale(image_num, ground_truth_file)
+    scale = get_absolute_scale(image_num, GROUND_TRUTH_FILE)
 
     print(f"Scale {scale}")
     
